@@ -1,0 +1,11 @@
+1. Integrated the APIs to create a sample app to render the 3d by resolving dependencies
+2. Created an arr with simple view to display API
+3. Build the arr and integrated in a JAVA app to verify if working
+4. Integrated retrofit to fetch data from server with a generic implementation and comments.
+5. Based on file name, view will fetch the .glb file from server.
+6. First it will check internal directory, then external directory, 
+if not find dynamically check the server download and show requested file
+7. APIs validate and verify is added.
+8. Added SDK initialization logic and encryption key assignment.
+9. Final verification by integrating the library in a java application 
+10. Documented the integration
