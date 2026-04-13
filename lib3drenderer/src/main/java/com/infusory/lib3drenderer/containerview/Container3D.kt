@@ -1,29 +1,30 @@
 package com.infusory.lib3drenderer.containerview
 
+import android.animation.ObjectAnimator
+import android.animation.ValueAnimator
 import android.content.Context
-import android.content.ContextWrapper
+import android.graphics.Bitmap
+import android.os.Handler
+import android.os.Looper
 import android.graphics.Color
 import android.graphics.PixelFormat
 import android.graphics.drawable.GradientDrawable
-import android.os.Handler
-import android.os.Looper
 import android.util.AttributeSet
 import android.util.Log
 import android.view.Gravity
 import android.view.MotionEvent
+import android.view.PixelCopy
 import android.view.ScaleGestureDetector
 import android.view.SurfaceView
+import android.view.View
 import android.view.ViewGroup
+import android.view.animation.LinearInterpolator
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
-import androidx.lifecycle.Observer
-import androidx.lifecycle.ViewModelProvider
-import androidx.lifecycle.ViewModelStoreOwner
 import com.infusory.lib3drenderer.Tutar
 import com.infusory.lib3drenderer.R
-import com.infusory.lib3drenderer.containerview.data.AuthViewModel
 import com.infusory.lib3drenderer.containerview.ModelData
 import com.infusory.tutarapp.filament.FilamentEngineManager
 import com.infusory.tutarapp.filament.renderer.CameraController
@@ -39,13 +40,13 @@ import kotlin.math.sqrt
  * 3D model display container with drag, resize, and interaction support.
  * Uses shared Filament engine for memory optimization.
  *
- * Created via Lib3DRenderer.createContainer() when user selects a model.
+ * Created via Tutar.createContainer() when user selects a model.
  */
 class Container3D @JvmOverloads constructor(
     context: Context,
     attrs: AttributeSet? = null,
     defStyleAttr: Int = 0,
-    initialModelData: String? =null
+    initialModelData: String? = null
 ) : FrameLayout(context, attrs, defStyleAttr) {
 
     companion object {
@@ -82,6 +83,12 @@ class Container3D @JvmOverloads constructor(
     private val sideControlButtons = mutableListOf<ImageView>()
     private val cornerIndicators = mutableListOf<ImageView>()
 
+    // Loading shimmer
+    private var loadingOverlay: FrameLayout? = null
+    private var shimmerView: View? = null
+    private var shimmerAnimator: ObjectAnimator? = null
+    private var loadingStatusText: TextView? = null
+
     // State
     private var isViewInitialized = false
     private var isModelLoaded = false
@@ -110,18 +117,10 @@ class Container3D @JvmOverloads constructor(
     private var scaleFactor = 1f
     private var initialDistance = 0f
 
-    // Download
-    private val viewModel: AuthViewModel? by lazy {
-        try {
-            val owner = (context as? ViewModelStoreOwner)
-                ?: (context as? ContextWrapper)?.baseContext as? ViewModelStoreOwner
-            owner?.let { ViewModelProvider(it)[AuthViewModel::class.java] }
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to get AuthViewModel", e)
-            null
-        }
-    }
-    private var downloadObserver: Observer<Boolean>? = null
+    // Resize snapshot optimization
+    private var resizeSnapshot: Bitmap? = null
+    private var snapshotView: ImageView? = null
+    private val snapshotHandler = Handler(Looper.getMainLooper())
 
     // Callbacks
     var onLoadingStarted: (() -> Unit)? = null
@@ -131,16 +130,6 @@ class Container3D @JvmOverloads constructor(
         set(value) { field = { cleanup(); value?.invoke() } }
 
     enum class Corner { NONE, TOP_LEFT, TOP_RIGHT, BOTTOM_LEFT, BOTTOM_RIGHT }
-
-    data class CameraOrbitState(val viewMatrix: FloatArray) {
-        override fun equals(other: Any?) = (other as? CameraOrbitState)?.viewMatrix?.contentEquals(viewMatrix) == true
-        override fun hashCode() = viewMatrix.contentHashCode()
-    }
-
-    data class ContainerState(
-        val x: Float, val y: Float, val width: Int, val height: Int,
-        val modelPath: String, val modelName: String, val cameraOrbit: CameraOrbitState? = null
-    )
 
     private val scaleGestureDetector = ScaleGestureDetector(context,
         object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
@@ -202,9 +191,6 @@ class Container3D @JvmOverloads constructor(
         updateTouchHandling()
     }
 
-    /**
-     * Set model data - triggers loading
-     */
     fun setModelData(modelPath: String) {
         Log.d(TAG, "[$containerId] setModelData: $modelPath")
         currentModelPath = modelPath
@@ -212,9 +198,6 @@ class Container3D @JvmOverloads constructor(
         initializeAndLoad()
     }
 
-    /**
-     * Set model with ModelData object
-     */
     fun setModelData(modelData: ModelData, fullPath: String) {
         Log.d(TAG, "[$containerId] setModelData: ${modelData.name}, $fullPath")
         currentModelData = modelData
@@ -230,6 +213,8 @@ class Container3D @JvmOverloads constructor(
     fun pauseRendering() = renderer?.onPause()
     fun resumeRendering() = renderer?.onResume()
 
+    // ==================== Lifecycle ====================
+
     fun cleanup() {
         Log.d(TAG, "[$containerId] cleanup()")
         Model3DContainerManager.unregisterContainer(this)
@@ -241,37 +226,14 @@ class Container3D @JvmOverloads constructor(
         isViewInitialized = false
         isModelLoaded = false
         cancelAutoHide()
-        cleanupObservers()
+        hideLoading()
+        releaseResizeSnapshot()
 
         renderer?.let { FilamentEngineManager.destroyRenderer(it) }
         renderer = null
         surfaceView = null
 
         post { (parent as? ViewGroup)?.removeView(this@Container3D) }
-    }
-
-    // ==================== State ====================
-
-    fun saveState() = ContainerState(
-        translationX, translationY, width, height,
-        currentModelPath ?: "", currentModelData?.name ?: "",
-        renderer?.saveCameraState()?.let { CameraOrbitState(it.viewMatrix) }
-    )
-
-    fun loadState(state: ContainerState) {
-        savedCameraState = state.cameraOrbit?.let { CameraController.CameraState(it.viewMatrix) }
-        if (state.modelPath.isNotEmpty()) setModelData(state.modelPath)
-        layoutParams = (layoutParams ?: ViewGroup.MarginLayoutParams(state.width, state.height)).apply {
-            width = state.width
-            height = state.height
-        }
-        translationX = state.x
-        translationY = state.y
-        requestLayout()
-    }
-
-    fun updateCurrentTransform() {
-        renderer?.saveCameraState()?.let { savedCameraState = it }
     }
 
     // ==================== Initialization ====================
@@ -340,7 +302,6 @@ class Container3D @JvmOverloads constructor(
 
     private fun addControlButtons() {
         controlsContainer?.apply {
-            // Interaction button
             interactionButton = createButton(R.drawable.ic_interact, "Interaction") { toggleInteraction() }
             addView(interactionButton!!)
             sideControlButtons.add(interactionButton!!)
@@ -348,14 +309,20 @@ class Container3D @JvmOverloads constructor(
 
             addView(createSpacer())
 
-            // Animation button
             animationToggleButton = createButton(R.drawable.ic_pause_animation, "Animation") { toggleAnimation() }
             addView(animationToggleButton!!)
             sideControlButtons.add(animationToggleButton!!)
 
             addView(createSpacer())
 
-            // Close button
+            val recenter = createButton(R.drawable.ic_recenter, "Recenter") {
+                renderer?.resetCamera()
+            }
+            addView(recenter)
+            sideControlButtons.add(recenter)
+
+            addView(createSpacer())
+
             val close = createButton(R.drawable.ic_close_white, "Close") {
                 onRemoveRequest?.invoke() ?: cleanup()
             }
@@ -366,15 +333,12 @@ class Container3D @JvmOverloads constructor(
 
     private fun addCornerIndicators() {
         contentContainer?.let { container ->
-            // Create corner indicators for all 4 corners
-            val corners = listOf(
-                Pair(Gravity.TOP or Gravity.START, Corner.TOP_LEFT),
-                Pair(Gravity.TOP or Gravity.END, Corner.TOP_RIGHT),
-                Pair(Gravity.BOTTOM or Gravity.START, Corner.BOTTOM_LEFT),
-                Pair(Gravity.BOTTOM or Gravity.END, Corner.BOTTOM_RIGHT)
-            )
-
-            corners.forEach { (gravity, _) ->
+            listOf(
+                Gravity.TOP or Gravity.START,
+                Gravity.TOP or Gravity.END,
+                Gravity.BOTTOM or Gravity.START,
+                Gravity.BOTTOM or Gravity.END
+            ).forEach { gravity ->
                 val indicator = createCornerIndicator(gravity)
                 container.addView(indicator)
                 cornerIndicators.add(indicator)
@@ -382,29 +346,23 @@ class Container3D @JvmOverloads constructor(
         }
     }
 
-    private fun createCornerIndicator(gravity: Int): ImageView {
-        return ImageView(context).apply {
-            layoutParams = FrameLayout.LayoutParams(
-                dpToPx(CORNER_INDICATOR_SIZE),
-                dpToPx(CORNER_INDICATOR_SIZE)
-            ).apply {
-                this.gravity = gravity
-                // Add small margins to position indicators slightly inside the corners
-                val margin = dpToPx(4)
-                setMargins(margin, margin, margin, margin)
-            }
-
-            // Create a corner bracket shape
-            background = GradientDrawable().apply {
-                shape = GradientDrawable.RECTANGLE
-                setStroke(dpToPx(2), Color.WHITE)
-                setColor(Color.TRANSPARENT)
-                cornerRadius = dpToPx(2).toFloat()
-            }
-
-            elevation = 2f
-            alpha = 0.7f
+    private fun createCornerIndicator(gravity: Int) = ImageView(context).apply {
+        layoutParams = FrameLayout.LayoutParams(
+            dpToPx(CORNER_INDICATOR_SIZE),
+            dpToPx(CORNER_INDICATOR_SIZE)
+        ).apply {
+            this.gravity = gravity
+            val margin = dpToPx(4)
+            setMargins(margin, margin, margin, margin)
         }
+        background = GradientDrawable().apply {
+            shape = GradientDrawable.RECTANGLE
+            setStroke(dpToPx(2), Color.WHITE)
+            setColor(Color.TRANSPARENT)
+            cornerRadius = dpToPx(2).toFloat()
+        }
+        elevation = 2f
+        alpha = 0.7f
     }
 
     private fun createButton(iconRes: Int, desc: String, action: () -> Unit) = ImageView(context).apply {
@@ -440,10 +398,25 @@ class Container3D @JvmOverloads constructor(
         try {
             surfaceView = SurfaceView(context).apply {
                 layoutParams = LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT)
-                setZOrderOnTop(true)
+                setZOrderMediaOverlay(true)
                 holder.setFormat(PixelFormat.TRANSLUCENT)
             }
-            contentContainer?.addView(surfaceView!!, 0) // Add at index 0 so corner indicators are on top
+            contentContainer?.addView(surfaceView!!, 0)
+
+            // Pre-create snapshot overlay
+            snapshotView = ImageView(context).apply {
+                visibility = View.GONE
+                scaleType = ImageView.ScaleType.FIT_XY
+                layoutParams = FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.MATCH_PARENT
+                )
+                setLayerType(View.LAYER_TYPE_HARDWARE, null)
+            }
+            contentContainer?.addView(snapshotView!!)
+
+            // Pre-create shimmer loading overlay
+            createLoadingOverlay()
 
             renderer = FilamentEngineManager.createRenderer(surfaceView!!).apply {
                 onLoadingStarted = { this@Container3D.onLoadingStarted?.invoke() }
@@ -466,6 +439,87 @@ class Container3D @JvmOverloads constructor(
         }
     }
 
+    // ==================== Loading Shimmer ====================
+
+    private fun createLoadingOverlay() {
+        loadingOverlay = FrameLayout(context).apply {
+            visibility = View.GONE
+            clipChildren = true
+            layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            )
+
+            // Shimmer sweep — a narrow translucent gradient band
+            shimmerView = View(context).apply {
+                layoutParams = FrameLayout.LayoutParams(dpToPx(100), FrameLayout.LayoutParams.MATCH_PARENT)
+                background = GradientDrawable(
+                    GradientDrawable.Orientation.LEFT_RIGHT,
+                    intArrayOf(
+                        Color.parseColor("#00FFFFFF"),
+                        Color.parseColor("#12FFFFFF"),
+                        Color.parseColor("#00FFFFFF")
+                    )
+                )
+            }
+            addView(shimmerView!!)
+
+            // Subtle status text at bottom-center
+            loadingStatusText = TextView(context).apply {
+                layoutParams = FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.WRAP_CONTENT,
+                    FrameLayout.LayoutParams.WRAP_CONTENT,
+                    Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
+                ).apply { bottomMargin = dpToPx(12) }
+                setTextColor(Color.parseColor("#66FFFFFF"))
+                textSize = 10f
+                text = "Loading..."
+            }
+            addView(loadingStatusText!!)
+        }
+        contentContainer?.addView(loadingOverlay!!)
+    }
+
+    private fun showLoading(status: String) {
+        loadingStatusText?.text = status
+        loadingOverlay?.visibility = View.VISIBLE
+        startShimmer()
+    }
+
+    private fun hideLoading() {
+        stopShimmer()
+        loadingOverlay?.visibility = View.GONE
+    }
+
+    private fun startShimmer() {
+        shimmerAnimator?.cancel()
+        val sv = shimmerView ?: return
+        val overlay = loadingOverlay ?: return
+
+        // Wait for layout so we know the width
+        overlay.post {
+            val sweepWidth = dpToPx(100).toFloat()
+            val containerWidth = overlay.width.toFloat()
+            if (containerWidth <= 0) return@post
+
+            shimmerAnimator = ObjectAnimator.ofFloat(
+                sv, "translationX",
+                -sweepWidth,
+                containerWidth
+            ).apply {
+                duration = 1800
+                repeatCount = ValueAnimator.INFINITE
+                interpolator = LinearInterpolator()
+                start()
+            }
+        }
+    }
+
+    private fun stopShimmer() {
+        shimmerAnimator?.cancel()
+        shimmerAnimator = null
+    }
+
     // ==================== Model Loading ====================
 
     private fun loadModel() {
@@ -479,21 +533,19 @@ class Container3D @JvmOverloads constructor(
             return
         }
 
-        if (!Tutar.isAuthenticated()) {
-            onLoadingFailed?.invoke("Not authenticated")
-            return
-        }
-
         Log.d(TAG, "[$containerId] Loading: $path")
+        showLoading("Loading model...")
         onLoadingStarted?.invoke()
 
         try {
             loadModelBuffer(path)?.let { buffer ->
                 renderer?.loadModel(buffer)
                 savedCameraState?.let { renderer?.restoreCameraState(it) }
+                hideLoading()
                 Log.d(TAG, "[$containerId] Model loaded")
             }
         } catch (e: Exception) {
+            hideLoading()
             Log.e(TAG, "[$containerId] Load failed", e)
             onLoadingFailed?.invoke("Error: ${e.message}")
         }
@@ -502,7 +554,6 @@ class Container3D @JvmOverloads constructor(
     private fun loadModelBuffer(filename: String): ByteBuffer? {
         val actualFilename = filename.substringAfterLast('/')
 
-        // Try local locations
         val locations = listOf(
             File(context.filesDir, "$FOLDER/$actualFilename"),
             File(context.getExternalFilesDir(null), "$FOLDER/$actualFilename"),
@@ -513,9 +564,7 @@ class Container3D @JvmOverloads constructor(
 
         for (file in locations) {
             if (file.exists() && file.canRead()) {
-                // Try decrypt
                 ModelDecryptionUtil.decryptModelFile(file)?.let { return it }
-                // Try raw
                 try {
                     val bytes = file.readBytes()
                     return ByteBuffer.allocateDirect(bytes.size).apply {
@@ -527,11 +576,10 @@ class Container3D @JvmOverloads constructor(
             }
         }
 
-        // Try assets
         tryLoadFromAssets(actualFilename)?.let { return it }
 
-        // Remote download
         Log.d(TAG, "[$containerId] Starting download: $actualFilename")
+        showLoading("Downloading...")
         initiateRemoteDownload(actualFilename)
         return null
     }
@@ -553,54 +601,52 @@ class Container3D @JvmOverloads constructor(
     }
 
     private fun initiateRemoteDownload(filename: String) {
-        val vm = viewModel ?: run {
-            showError("Download unavailable")
-            onLoadingFailed?.invoke("Download service unavailable")
-            return
-        }
-
-        val liveData = vm.downloadFile(context, filename)
-        downloadObserver = Observer { success ->
-            liveData.removeObserver(downloadObserver!!)
-            downloadObserver = null
-
-            Handler(Looper.getMainLooper()).post {
-                if (success) {
-                    val file = File(context.filesDir, FOLDER).resolve(filename)
-                    if (file.exists()) {
-                        ModelDecryptionUtil.decryptModelFile(file)?.let { buffer ->
+        ModelDownloader.downloadIfNeeded(context, filename, object : ModelDownloader.DownloadCallback {
+            override fun onSuccess(file: File) {
+                Handler(Looper.getMainLooper()).post {
+                }
+                Thread {
+                    val buffer = ModelDecryptionUtil.decryptModelFile(file)
+                    Handler(Looper.getMainLooper()).post {
+                        if (buffer != null) {
+                            clearErrorViews()
+                            hideLoading()
                             renderer?.loadModel(buffer)
+                            isModelLoaded = true
                             Log.d(TAG, "[$containerId] Downloaded model loaded")
-                            return@post
+                            onLoadingCompleted?.invoke()
+                        } else {
+                            hideLoading()
+                            showError("Decrypt failed")
+                            onLoadingFailed?.invoke("Decrypt failed")
                         }
                     }
-                    showError("Decrypt failed")
-                    onLoadingFailed?.invoke("Decrypt failed")
-                } else {
-                    showError("Download failed")
-                    onLoadingFailed?.invoke("Download failed: $filename")
-                }
+                }.start()
             }
-        }
-        liveData.observeForever(downloadObserver!!)
+
+            override fun onFailure(error: String) {
+                hideLoading()
+                showError("Download failed")
+                onLoadingFailed?.invoke("Download failed: $error")
+            }
+        })
     }
 
-    private fun showError(msg: String) {
+    private fun clearErrorViews() {
         contentContainer?.let { c ->
             for (i in c.childCount - 1 downTo 0) {
-                if (c.getChildAt(i) != surfaceView && c.getChildAt(i) !in cornerIndicators) {
+                val child = c.getChildAt(i)
+                if (child != surfaceView && child != snapshotView
+                    && child != loadingOverlay && child !in cornerIndicators) {
                     c.removeViewAt(i)
                 }
             }
-            c.addView(createErrorView(msg))
         }
     }
 
-    private fun cleanupObservers() {
-        downloadObserver?.let { obs ->
-            try { viewModel?.downloadFile(context, "")?.removeObserver(obs) } catch (_: Exception) {}
-        }
-        downloadObserver = null
+    private fun showError(msg: String) {
+        clearErrorViews()
+        contentContainer?.addView(createErrorView(msg))
     }
 
     // ==================== Animation ====================
@@ -610,7 +656,7 @@ class Container3D @JvmOverloads constructor(
             animationToggleButton?.setImageResource(
                 if (paused) R.drawable.ic_play_animation else R.drawable.ic_pause_animation
             )
-        } ?: Log.d( "No animations" , "No animations are available in this model")
+        } ?: Log.d("No animations", "No animations are available in this model")
     }
 
     // ==================== Touch ====================
@@ -624,7 +670,7 @@ class Container3D @JvmOverloads constructor(
                     when (e.action) {
                         MotionEvent.ACTION_DOWN -> onInteractionStart()
                         MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                            updateCurrentTransform()
+                            renderer?.saveCameraState()?.let { savedCameraState = it }
                             onInteractionEnd()
                         }
                     }
@@ -663,16 +709,17 @@ class Container3D @JvmOverloads constructor(
             MotionEvent.ACTION_DOWN -> { handleDown(event); true }
             MotionEvent.ACTION_POINTER_DOWN -> { handlePointerDown(event); true }
             MotionEvent.ACTION_MOVE -> { handleMove(event); true }
-            MotionEvent.ACTION_UP -> { resetTouch(); onInteractionEnd(); true }
+            MotionEvent.ACTION_UP -> { releaseResizeSnapshot(); resetTouch(); onInteractionEnd(); true }
             MotionEvent.ACTION_POINTER_UP -> {
                 if (event.pointerCount <= 2) {
                     isPinching = false
                     initialDistance = 0f
                     scaleFactor = 1f
+                    releaseResizeSnapshot()
                 }
                 true
             }
-            MotionEvent.ACTION_CANCEL -> { resetTouch(); onInteractionEnd(); true }
+            MotionEvent.ACTION_CANCEL -> { releaseResizeSnapshot(); resetTouch(); onInteractionEnd(); true }
             else -> super.onTouchEvent(event)
         }
     }
@@ -684,6 +731,7 @@ class Container3D @JvmOverloads constructor(
             activeCorner = getCorner(e.x, e.y)
             isResizing = activeCorner != Corner.NONE
             isDragging = !isResizing && !isPinching
+            if (isResizing) captureResizeSnapshot()
             if (isDragging || isResizing) bringToFront()
             onInteractionStart()
         }
@@ -698,6 +746,7 @@ class Container3D @JvmOverloads constructor(
             initialHeight = height
             initialDistance = getDistance(e)
             scaleFactor = 1f
+            captureResizeSnapshot()
             onInteractionStart()
         }
     }
@@ -713,6 +762,7 @@ class Container3D @JvmOverloads constructor(
                     translationX + width / 2f,
                     translationY + height / 2f
                 )
+                updateSnapshotLayout()
             }
         } else if (e.pointerCount == 1 && !isPinching) {
             val dx = e.rawX - lastX
@@ -723,6 +773,7 @@ class Container3D @JvmOverloads constructor(
                 translationY += dy
             } else if (isResizing) {
                 handleResize(dx, dy)
+                updateSnapshotLayout()
             }
 
             lastX = e.rawX
@@ -782,6 +833,60 @@ class Container3D @JvmOverloads constructor(
         isHandling3DTouch = false
     }
 
+    // ==================== Resize Snapshot Optimization ====================
+
+    private fun captureResizeSnapshot() {
+        if (resizeSnapshot != null) return
+
+        val sv = surfaceView ?: return
+        val overlay = snapshotView ?: return
+        if (sv.width <= 0 || sv.height <= 0 || !sv.holder.surface.isValid) return
+
+        renderer?.onPause()
+
+        try {
+            val bitmap = Bitmap.createBitmap(sv.width, sv.height, Bitmap.Config.ARGB_8888)
+
+            PixelCopy.request(sv, bitmap, { result ->
+                snapshotHandler.post {
+                    if (result == PixelCopy.SUCCESS && (isResizing || isPinching)) {
+                        resizeSnapshot = bitmap
+                        overlay.setImageBitmap(bitmap)
+                        overlay.visibility = View.VISIBLE
+                        sv.visibility = View.INVISIBLE
+                    } else {
+                        bitmap.recycle()
+                    }
+                }
+            }, snapshotHandler)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to capture resize snapshot", e)
+        }
+    }
+
+    private fun updateSnapshotLayout() {
+        snapshotView?.let { sv ->
+            (sv.layoutParams as? FrameLayout.LayoutParams)?.apply {
+                width = FrameLayout.LayoutParams.MATCH_PARENT
+                height = FrameLayout.LayoutParams.MATCH_PARENT
+            }
+            sv.requestLayout()
+        }
+    }
+
+    private fun releaseResizeSnapshot() {
+        snapshotView?.let { overlay ->
+            overlay.visibility = View.GONE
+            overlay.setImageBitmap(null)
+        }
+
+        resizeSnapshot?.recycle()
+        resizeSnapshot = null
+
+        surfaceView?.visibility = View.VISIBLE
+        renderer?.onResume()
+    }
+
     private fun getDistance(e: MotionEvent): Float {
         if (e.pointerCount < 2) return 0f
         val dx = e.getX(0) - e.getX(1)
@@ -790,7 +895,7 @@ class Container3D @JvmOverloads constructor(
     }
 
     private fun getCorner(x: Float, y: Float): Corner {
-        fun d(x1: Float, y1: Float, x2: Float, y2: Float) = sqrt((x1-x2).pow(2) + (y1-y2).pow(2))
+        fun d(x1: Float, y1: Float, x2: Float, y2: Float) = sqrt((x1 - x2).pow(2) + (y1 - y2).pow(2))
         val h = RESIZE_HANDLE_SIZE / 2
         return when {
             d(x, y, h, h) <= RESIZE_HIT_AREA -> Corner.TOP_LEFT
@@ -924,8 +1029,9 @@ class Container3D @JvmOverloads constructor(
 
     override fun onDetachedFromWindow() {
         super.onDetachedFromWindow()
+        stopShimmer()
+        releaseResizeSnapshot()
         renderer?.onPause()
         cancelAutoHide()
-        cleanupObservers()
     }
 }

@@ -10,14 +10,6 @@ import kotlin.math.cos
 import kotlin.math.sin
 import kotlin.math.sqrt
 
-/**
- * Controls camera positioning and interaction for a 3D view.
- *
- * OPTIMIZATIONS:
- * 1. Cached sine/cosine values (only recalculated when angles change)
- * 2. Pre-computed eye position
- * 3. Reduced object allocation
- */
 class CameraController {
 
     companion object {
@@ -26,12 +18,12 @@ class CameraController {
         // Touch sensitivity
         private const val ORBIT_SENSITIVITY = 0.005f
         private const val ZOOM_SENSITIVITY = 0.01f
-        private const val PAN_SENSITIVITY = 0.005f
+        private const val PAN_SENSITIVITY = 0.001f
 
         // Camera constraints
         private const val MIN_DISTANCE = 1.0f
         private const val MAX_DISTANCE = 20.0f
-        private const val MIN_POLAR = 0.1f  // Avoid gimbal lock at poles
+        private const val MIN_POLAR = 0.1f
         private const val MAX_POLAR = Math.PI.toFloat() - 0.1f
     }
 
@@ -44,8 +36,8 @@ class CameraController {
     private var viewportHeight = 0
 
     // Spherical coordinates for orbit camera
-    private var azimuth = 0f      // Horizontal angle (radians)
-    private var polar = Math.PI.toFloat() / 2f  // Vertical angle (radians)
+    private var azimuth = 0f
+    private var polar = Math.PI.toFloat() / 2f
     private var distance = FilamentConfig.DEFAULT_CAMERA_DISTANCE.toFloat()
 
     // Target point (what camera looks at)
@@ -82,15 +74,13 @@ class CameraController {
      * Camera state for save/restore
      */
     data class CameraState(
-        val viewMatrix: FloatArray
-    ) {
-        override fun equals(other: Any?): Boolean {
-            if (this === other) return true
-            if (javaClass != other?.javaClass) return false
-            return viewMatrix.contentEquals((other as CameraState).viewMatrix)
-        }
-        override fun hashCode(): Int = viewMatrix.contentHashCode()
-    }
+        val azimuth: Float,
+        val polar: Float,
+        val distance: Float,
+        val targetX: Float,
+        val targetY: Float,
+        val targetZ: Float
+    )
 
     /**
      * Initialize with a camera and view
@@ -98,11 +88,7 @@ class CameraController {
     fun initialize(camera: Camera, view: View) {
         this.camera = camera
         this.view = view
-
-        // Set default position
         resetToDefault()
-
-        Log.d(TAG, "Camera controller initialized")
     }
 
     /**
@@ -156,46 +142,37 @@ class CameraController {
      * Save current camera state
      */
     fun saveState(): CameraState? {
-        return camera?.let { cam ->
-            val viewMatrix = FloatArray(16)
-            cam.getViewMatrix(viewMatrix)
-            CameraState(viewMatrix)
-        }
+        return CameraState(
+            azimuth = azimuth,
+            polar = polar,
+            distance = distance,
+            targetX = targetX,
+            targetY = targetY,
+            targetZ = targetZ
+        )
     }
 
     /**
      * Restore camera state
      */
     fun restoreState(state: CameraState) {
-        camera?.let { cam ->
-            try {
-                // Extract eye position from view matrix by inverting it
-                val modelMatrix = FloatArray(16)
-                if (android.opengl.Matrix.invertM(modelMatrix, 0, state.viewMatrix, 0)) {
-                    val newEyeX = modelMatrix[12].toDouble()
-                    val newEyeY = modelMatrix[13].toDouble()
-                    val newEyeZ = modelMatrix[14].toDouble()
+        try {
+            azimuth = state.azimuth
+            polar = state.polar
+            distance = state.distance
 
-                    val upX = modelMatrix[4].toDouble()
-                    val upY = modelMatrix[5].toDouble()
-                    val upZ = modelMatrix[6].toDouble()
+            targetX = state.targetX
+            targetY = state.targetY
+            targetZ = state.targetZ
 
-                    cam.lookAt(
-                        newEyeX, newEyeY, newEyeZ,
-                        targetX.toDouble(), targetY.toDouble(), targetZ.toDouble(),
-                        upX, upY, upZ
-                    )
+            trigDirty = true
+            positionDirty = true
 
-                    // Update spherical coordinates from restored position
-                    updateSphericalFromCartesian(newEyeX.toFloat(), newEyeY.toFloat(), newEyeZ.toFloat())
+            applyTransform()
 
-                    Log.d(TAG, "Camera state restored")
-                }else{
-
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to restore camera state", e)
-            }
+            Log.d(TAG, "Camera state restored (FULL: rotation + pan + zoom)")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to restore camera state", e)
         }
     }
 
@@ -239,7 +216,34 @@ class CameraController {
             MotionEvent.ACTION_MOVE -> {
                 when (touchMode) {
                     TouchMode.ORBIT -> handleOrbit(event)
-                    TouchMode.ZOOM -> handleZoom(event)
+                    TouchMode.ZOOM -> {
+                        if (event.pointerCount >= 2) {
+                            val currentDistance = getPinchDistance(event)
+                            val delta = currentDistance - initialPinchDistance
+
+                            // If fingers are pinching → ZOOM
+                            if (kotlin.math.abs(delta) > 5f) {
+                                handleZoom(event)
+                            } else {
+                                // If fingers move parallel → PAN
+                                val midX = (event.getX(0) + event.getX(1)) / 2f
+                                val midY = (event.getY(0) + event.getY(1)) / 2f
+
+                                val prevMidX = (lastTouchX + lastTouchX2) / 2f
+                                val prevMidY = (lastTouchY + lastTouchY2) / 2f
+
+                                val dx = midX - prevMidX
+                                val dy = midY - prevMidY
+
+                                pan(-dx, dy)
+
+                                lastTouchX = event.getX(0)
+                                lastTouchY = event.getY(0)
+                                lastTouchX2 = event.getX(1)
+                                lastTouchY2 = event.getY(1)
+                            }
+                        }
+                    }
                     TouchMode.PAN -> handlePan(event)
                     TouchMode.NONE -> {}
                 }

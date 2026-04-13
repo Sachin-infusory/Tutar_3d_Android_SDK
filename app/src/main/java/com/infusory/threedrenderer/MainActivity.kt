@@ -19,11 +19,21 @@ import java.io.File
 class MainActivity : AppCompatActivity() {
     private lateinit var containerParent: FrameLayout
 
+    // Track how many containers have been added so each one is offset
+    private var containerCount = 0
+    private val OFFSET_STEP_DP = 40 // Each new container is offset by this much
+
     private val availableModels = arrayOf(
         "CirculatorySystem.glb",
         "DNA.glb",
         "Solenoid.glb",
-        "Vowels.glb"
+        "Vowels.glb",
+        "Rutherfords_experiment.glb",
+        "skeleton.glb",
+        "steam_engine.glb",
+        "anatomy_of_a_flower.glb",
+        "animal_cell.glb",
+        "Brain.glb"
     )
 
     private val basePath = "/storage/emulated/0/Download/"
@@ -45,7 +55,6 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showCustomModelDialog() {
-        // 1. Inflate the custom layout
         val dialogView = layoutInflater.inflate(R.layout.dialog_model_selection, null)
         val container = dialogView.findViewById<LinearLayout>(R.id.modelsContainer)
         val btnClose = dialogView.findViewById<Button>(R.id.btnClose)
@@ -54,27 +63,23 @@ class MainActivity : AppCompatActivity() {
             .setView(dialogView)
             .create()
 
-        // 2. Dynamically add a "Cool" button for each model
         availableModels.forEach { fileName ->
             val itemLayout = TextView(this).apply {
-                text = "  📦  ${fileName.substringBefore(".")}" // Add an emoji icon for style
+                text = "  📦  ${fileName.substringBefore(".")}"
                 textSize = 18f
                 setTextColor(Color.WHITE)
                 typeface = Typeface.DEFAULT_BOLD
                 setPadding(40, 40, 40, 40)
                 gravity = Gravity.CENTER_VERTICAL
+                background = ContextCompat.getDrawable(context, android.R.drawable.list_selector_background)
 
-                // Add a simple bottom border for separation
-                background = ContextCompat.getDrawable(context, android.R.drawable.list_selector_background) // Standard ripple
-
-                // Click Listener
                 setOnClickListener {
                     val fullPath = File(basePath, fileName).absolutePath
                     val modelName = fileName.substringBeforeLast(".")
                     val modelData = ModelData(modelName, fileName, null)
 
                     onModelSelected(modelData, fullPath)
-                    dialog.dismiss() // Close popup
+                    dialog.dismiss()
                 }
             }
             container.addView(itemLayout)
@@ -82,19 +87,38 @@ class MainActivity : AppCompatActivity() {
 
         btnClose.setOnClickListener { dialog.dismiss() }
 
-        // 3. Essential: Make the window transparent so our rounded corners show
         dialog.window?.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
         dialog.show()
     }
 
     private fun onModelSelected(modelData: ModelData, modelPath: String) {
-        // containerParent.removeAllViews() // Uncomment if you need to clear previous models
-        Tutar.createContainer(
+        val container3D = Tutar.createContainer(
             context = this,
             modelData = modelData,
             modelPath = modelPath,
             parent = containerParent
         )
+
+        // Offset each new container so they don't stack on top of each other.
+        // This prevents all containers from occupying the same visual space
+        // and receiving the same touch events.
+        container3D?.let {
+            val offsetPx = dpToPx(OFFSET_STEP_DP) * containerCount
+            it.translationX = offsetPx.toFloat()
+            it.translationY = offsetPx.toFloat()
+            containerCount++
+
+            // When a container is removed, decrement the count
+            val originalRemoveCallback = it.onRemoveRequest
+            it.onRemoveRequest = {
+                containerCount--
+                originalRemoveCallback?.invoke()
+            }
+        }
+    }
+
+    private fun dpToPx(dp: Int): Int {
+        return (dp * resources.displayMetrics.density).toInt()
     }
 
     override fun onDestroy() {

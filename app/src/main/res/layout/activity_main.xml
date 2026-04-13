@@ -7,10 +7,11 @@
     android:layout_height="match_parent"
     tools:context=".MainActivity">
 
-    <com.infusory.lib3drenderer.containerview.Container3D
+    <FrameLayout
         android:id="@+id/container3D"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
+        android:background="#FF5722"
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"

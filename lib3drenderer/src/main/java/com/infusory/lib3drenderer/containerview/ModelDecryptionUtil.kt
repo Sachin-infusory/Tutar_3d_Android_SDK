@@ -6,20 +6,23 @@ import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.security.MessageDigest
+import java.util.Arrays
 import javax.crypto.Cipher
 import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
 
 /**
- * Utility class for decrypting encrypted model files
+ * Utility class for decrypting encrypted model files.
+ *
+ * The decryption key is derived at runtime from scattered fragments
+ * across Kotlin and native (C++) layers. No readable key exists in the binary.
  */
 object ModelDecryptionUtil {
 
-    const val TAG = "ModelDecryptionUtil"
-    private const val ENCRYPTION_KEY = "d03958346b286aa4af4e5b088f6cbc08"
-    var KEY: String = TAG;
+    private const val TAG = "ModelDecryptionUtil"
+
     /**
-     * Derives key and IV from password and salt using MD5 (OpenSSL compatible)
+     * Derives key and IV from password and salt using MD5 (OpenSSL EVP_BytesToKey compatible)
      */
     private fun deriveKeyAndIv(
         password: ByteArray,
@@ -41,8 +44,22 @@ object ModelDecryptionUtil {
         return derived.take(totalLength).toByteArray()
     }
 
-    fun setDecryptKey(key : String) {
-        KEY = ENCRYPTION_KEY;
+    /**
+     * Retrieves the decryption password from the native key provider,
+     * uses it for decryption, then zeros it out.
+     */
+    private inline fun <T> withPassword(block: (ByteArray) -> T): T? {
+        val password = NativeKeyProvider.getKey()
+        if (password == null) {
+            Log.e(TAG, "Failed to retrieve decryption key")
+            return null
+        }
+        return try {
+            block(password)
+        } finally {
+            // Zero out the password immediately after use
+            Arrays.fill(password, 0.toByte())
+        }
     }
 
     fun decryptModelFile(file: File): ByteBuffer? {
@@ -54,56 +71,10 @@ object ModelDecryptionUtil {
 
             Log.d(TAG, "Decrypting model file: ${file.absolutePath}")
 
-            // Read encrypted file content
             val encryptedString = file.readText()
             val encryptedBytes = Base64.decode(encryptedString, Base64.DEFAULT)
 
-            // Extract salt and ciphertext
-            val saltPrefix = "Salted__"
-            val saltPrefixBytes = saltPrefix.toByteArray(Charsets.UTF_8)
-
-            // Verify salt prefix
-            val prefix = encryptedBytes.sliceArray(0 until saltPrefixBytes.size)
-            if (!prefix.contentEquals(saltPrefixBytes)) {
-                throw Exception("Salted prefix not found in the encrypted file")
-            }
-
-            // Extract salt (8 bytes after prefix)
-            val salt = encryptedBytes.sliceArray(
-                saltPrefixBytes.size until saltPrefixBytes.size + 8
-            )
-
-            // Extract ciphertext (everything after prefix + salt)
-            val cipherTextBytes = encryptedBytes.sliceArray(
-                saltPrefixBytes.size + 8 until encryptedBytes.size
-            )
-
-            // Derive key and IV
-            val password = KEY.toByteArray(Charsets.UTF_8)
-            val keyAndIv = deriveKeyAndIv(password, salt, 32, 16)
-            val key = keyAndIv.sliceArray(0 until 32)
-            val iv = keyAndIv.sliceArray(32 until 48)
-
-            // Decrypt using AES/CBC/PKCS5Padding
-            val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
-            val secretKeySpec = SecretKeySpec(key, "AES")
-            val ivParameterSpec = IvParameterSpec(iv)
-            cipher.init(Cipher.DECRYPT_MODE, secretKeySpec, ivParameterSpec)
-
-            val decryptedData = cipher.doFinal(cipherTextBytes)
-
-            // Decode from base64 (the decrypted data is base64 encoded)
-            val decryptedString = String(decryptedData, Charsets.UTF_8)
-            val fileData = Base64.decode(decryptedString, Base64.DEFAULT)
-
-            Log.d(TAG, "Successfully decrypted model: ${file.name} (${fileData.size} bytes)")
-
-            // Convert to ByteBuffer
-            ByteBuffer.allocateDirect(fileData.size).apply {
-                order(ByteOrder.nativeOrder())
-                put(fileData)
-                rewind()
-            }
+            decryptBytes(encryptedBytes, file.name)
 
         } catch (e: Exception) {
             Log.e(TAG, "Error during decryption: ${file.name}", e)
@@ -111,54 +82,48 @@ object ModelDecryptionUtil {
         }
     }
 
-    /**
-     * Decrypts an encrypted model file from a file path
-     *
-     * @param filePath The path to the encrypted file
-     * @return Decrypted ByteBuffer ready for use, or null if decryption fails
-     */
     fun decryptModelFile(filePath: String): ByteBuffer? {
         return decryptModelFile(File(filePath))
     }
 
-    /**
-     * Decrypts model file bytes directly (if you already have the file content)
-     *
-     * @param encryptedBytes The encrypted file content as ByteArray
-     * @param fileName Optional filename for logging purposes
-     * @return Decrypted ByteBuffer ready for use, or null if decryption fails
-     */
     fun decryptModelBytes(encryptedBytes: ByteArray, fileName: String = "unknown"): ByteBuffer? {
         return try {
-            Log.d(TAG, "Decrypting model bytes: $fileName")
+            decryptBytes(encryptedBytes, fileName)
+        } catch (e: Exception) {
+            Log.e(TAG, "Error during decryption of bytes: $fileName", e)
+            null
+        }
+    }
 
-            // Extract salt and ciphertext
-            val saltPrefix = "Salted__"
-            val saltPrefixBytes = saltPrefix.toByteArray(Charsets.UTF_8)
+    /**
+     * Core decryption logic — shared by all entry points.
+     */
+    private fun decryptBytes(encryptedBytes: ByteArray, fileName: String): ByteBuffer? {
+        val saltPrefix = "Salted__"
+        val saltPrefixBytes = saltPrefix.toByteArray(Charsets.UTF_8)
 
-            // Verify salt prefix
-            val prefix = encryptedBytes.sliceArray(0 until saltPrefixBytes.size)
-            if (!prefix.contentEquals(saltPrefixBytes)) {
-                throw Exception("Salted prefix not found in the encrypted data")
-            }
+        // Verify salt prefix
+        val prefix = encryptedBytes.sliceArray(0 until saltPrefixBytes.size)
+        if (!prefix.contentEquals(saltPrefixBytes)) {
+            throw Exception("Salted prefix not found in the encrypted data")
+        }
 
-            // Extract salt (8 bytes after prefix)
-            val salt = encryptedBytes.sliceArray(
-                saltPrefixBytes.size until saltPrefixBytes.size + 8
-            )
+        // Extract salt (8 bytes after prefix)
+        val salt = encryptedBytes.sliceArray(
+            saltPrefixBytes.size until saltPrefixBytes.size + 8
+        )
 
-            // Extract ciphertext (everything after prefix + salt)
-            val cipherTextBytes = encryptedBytes.sliceArray(
-                saltPrefixBytes.size + 8 until encryptedBytes.size
-            )
+        // Extract ciphertext
+        val cipherTextBytes = encryptedBytes.sliceArray(
+            saltPrefixBytes.size + 8 until encryptedBytes.size
+        )
 
-            // Derive key and IV
-            val password = ENCRYPTION_KEY.toByteArray(Charsets.UTF_8)
+        // Get password from native key provider, decrypt, zero password
+        return withPassword { password ->
             val keyAndIv = deriveKeyAndIv(password, salt, 32, 16)
             val key = keyAndIv.sliceArray(0 until 32)
             val iv = keyAndIv.sliceArray(32 until 48)
 
-            // Decrypt using AES/CBC/PKCS5Padding
             val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
             val secretKeySpec = SecretKeySpec(key, "AES")
             val ivParameterSpec = IvParameterSpec(iv)
@@ -166,22 +131,25 @@ object ModelDecryptionUtil {
 
             val decryptedData = cipher.doFinal(cipherTextBytes)
 
-            // Decode from base64 (the decrypted data is base64 encoded)
+            // Zero derived key material
+            Arrays.fill(key, 0.toByte())
+            Arrays.fill(iv, 0.toByte())
+            Arrays.fill(keyAndIv, 0.toByte())
+
+            // Decode from base64
             val decryptedString = String(decryptedData, Charsets.UTF_8)
             val fileData = Base64.decode(decryptedString, Base64.DEFAULT)
 
-            Log.d(TAG, "Successfully decrypted model bytes: $fileName (${fileData.size} bytes)")
+            // Zero decrypted intermediate
+            Arrays.fill(decryptedData, 0.toByte())
 
-            // Convert to ByteBuffer
+            Log.d(TAG, "Successfully decrypted: $fileName (${fileData.size} bytes)")
+
             ByteBuffer.allocateDirect(fileData.size).apply {
                 order(ByteOrder.nativeOrder())
                 put(fileData)
                 rewind()
             }
-
-        } catch (e: Exception) {
-            Log.e(TAG, "Error during decryption of bytes: $fileName", e)
-            null
         }
     }
 }
