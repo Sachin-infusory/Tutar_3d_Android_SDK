@@ -116,7 +116,6 @@ class AnimationController {
         if (updateCount % 60 == 0) {
             val avgApplyMs = (totalApplyTimeNs / 60) / 1_000_000f
             val avgBoneMs = (totalBoneTimeNs / (60 / skipFrames.coerceAtLeast(1))) / 1_000_000f
-            Log.d(TAG, "⏱️ Apply: %.2fms | Bones: %.2fms (skip=$skipFrames)".format(avgApplyMs, avgBoneMs))
             totalApplyTimeNs = 0L
             totalBoneTimeNs = 0L
         }

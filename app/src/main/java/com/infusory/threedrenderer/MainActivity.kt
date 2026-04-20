@@ -24,6 +24,8 @@ class MainActivity : AppCompatActivity() {
     private val OFFSET_STEP_DP = 40 // Each new container is offset by this much
 
     private val availableModels = arrayOf(
+        "BirdAndNest.glb",
+        "OzoneDepletion.glb",
         "CirculatorySystem.glb",
         "DNA.glb",
         "Solenoid.glb",
@@ -35,8 +37,6 @@ class MainActivity : AppCompatActivity() {
         "animal_cell.glb",
         "Brain.glb"
     )
-
-    private val basePath = "/storage/emulated/0/Download/"
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -74,7 +74,7 @@ class MainActivity : AppCompatActivity() {
                 background = ContextCompat.getDrawable(context, android.R.drawable.list_selector_background)
 
                 setOnClickListener {
-                    val fullPath = File(basePath, fileName).absolutePath
+                    val fullPath = File("hh", fileName).absolutePath
                     val modelName = fileName.substringBeforeLast(".")
                     val modelData = ModelData(modelName, fileName, null)
 

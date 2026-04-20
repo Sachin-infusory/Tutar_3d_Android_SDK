@@ -18,6 +18,7 @@ import kotlin.math.abs
  * Labels are extracted from glTF node extras.prop and rendered as Android TextViews
  * positioned on the sides of the container with connecting lines to the 3D anchor points.
  *
+ * Supports live animated positions via optional livePositions parameter.
  * All projection math uses the Filament Camera directly — no SceneView dependency.
  * Zero allocations per frame.
  */
@@ -60,12 +61,7 @@ class LabelOverlayManager(private val context: Context) {
 
     // ─── Setup ───────────────────────────────────────────────────────────────
 
-    /**
-     * Create the overlay views and add them to the container.
-     * Call this after the SurfaceView is added to contentContainer.
-     */
     fun attachTo(contentContainer: FrameLayout) {
-        // Line view (draws connecting lines)
         lineView = LabelLineView(context).apply {
             layoutParams = FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
@@ -75,7 +71,6 @@ class LabelOverlayManager(private val context: Context) {
         }
         contentContainer.addView(lineView)
 
-        // Label container (holds TextViews)
         overlayContainer = FrameLayout(context).apply {
             layoutParams = FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
@@ -87,10 +82,6 @@ class LabelOverlayManager(private val context: Context) {
         contentContainer.addView(overlayContainer)
     }
 
-    /**
-     * Set labels extracted from the GLB. Call after model is loaded.
-     * Does NOT show labels — call showLabels() to display.
-     */
     fun setLabels(newLabels: List<GlbLabelExtractor.LabelInfo>) {
         clearLabelViews()
         labels = newLabels
@@ -115,7 +106,6 @@ class LabelOverlayManager(private val context: Context) {
                 maxWidth = dpToPx(160f).toInt()
                 maxLines = 1
                 ellipsize = android.text.TextUtils.TruncateAt.END
-                // Clone drawable so each label has its own instance
                 background = (labelBg.constantState?.newDrawable()?.mutate()) ?: GradientDrawable().apply {
                     setColor(Color.parseColor("#CC1B4F72"))
                     cornerRadius = dpToPx(6f)
@@ -160,14 +150,21 @@ class LabelOverlayManager(private val context: Context) {
     // ─── Per-Frame Update ────────────────────────────────────────────────────
 
     /**
-     * Update label positions. Call this from the render loop / frame callback.
-     * Uses the Filament Camera directly for projection.
+     * Update label positions each frame.
      *
-     * @param camera The Filament Camera from Container3DRenderer
+     * @param camera Filament Camera for projection
      * @param viewportWidth Current viewport width in pixels
      * @param viewportHeight Current viewport height in pixels
+     * @param livePositions Optional list of current world positions (from TransformManager).
+     *                      If provided, uses these instead of static localPosition from GLB JSON.
+     *                      Must be same size as labels list. Each entry is [x, y, z].
      */
-    fun updatePositions(camera: Camera?, viewportWidth: Int, viewportHeight: Int) {
+    fun updatePositions(
+        camera: Camera?,
+        viewportWidth: Int,
+        viewportHeight: Int,
+        livePositions: List<FloatArray>? = null
+    ) {
         if (!isVisible || entries.isEmpty() || camera == null) return
         if (viewportWidth <= 0 || viewportHeight <= 0) return
 
@@ -196,7 +193,9 @@ class LabelOverlayManager(private val context: Context) {
 
         for (i in entries.indices) {
             val entry = entries[i]
-            val pos = entry.info.localPosition
+
+            // Use live animated position if available, otherwise fall back to static
+            val pos = livePositions?.getOrNull(i) ?: entry.info.localPosition
 
             // Project 3D → 2D (inline, no method call)
             val x = pos[0]; val y = pos[1]; val z = pos[2]
@@ -213,7 +212,7 @@ class LabelOverlayManager(private val context: Context) {
             val screenX = (clipX * invW * 0.5f + 0.5f) * wf
             val screenY = (1f - (clipY * invW * 0.5f + 0.5f)) * hf
 
-            // Skip if off-screen
+            // Hide if off-screen
             if (screenX < -100 || screenX > wf + 100 || screenY < -100 || screenY > hf + 100) {
                 entry.view.visibility = View.INVISIBLE
                 continue

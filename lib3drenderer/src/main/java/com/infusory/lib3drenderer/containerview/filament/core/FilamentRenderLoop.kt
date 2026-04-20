@@ -84,14 +84,12 @@ class FilamentRenderLoop {
                 val avgChoreographerMs = (choreographerIntervalAccumulator / LOG_INTERVAL) / 1_000_000f
                 val realFps = if (avgChoreographerMs > 0) 1000f / avgChoreographerMs else 0f
 
-                Log.d(TAG, "📊 $count containers | SystemFPS: %.0f".format(realFps))
 
                 // Per-container stats
                 for (c in list) {
                     val total = c.getTotalFrames()
                     val success = c.getSuccessfulFrames()
                     val rate = c.getSuccessRate()
-                    Log.d(TAG, "   [${c.rendererId}] Success: $rate% ($success/$total)")
                 }
 
                 choreographerIntervalAccumulator = 0L

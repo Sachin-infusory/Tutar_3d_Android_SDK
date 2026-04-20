@@ -66,7 +66,10 @@ class LabelLineView @JvmOverloads constructor(
     }
 
     fun commitLines() {
-        invalidate()
+        // Only trigger redraw if we have visible lines
+        if (lineCount > 0) {
+            invalidate()
+        }
     }
 
     fun clear() {

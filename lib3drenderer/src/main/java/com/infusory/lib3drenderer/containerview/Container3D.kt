@@ -26,6 +26,7 @@ import android.widget.TextView
 import com.infusory.lib3drenderer.Tutar
 import com.infusory.lib3drenderer.R
 import com.infusory.lib3drenderer.containerview.ModelData
+import com.infusory.lib3drenderer.containerview.label.LabelOverlayManager
 import com.infusory.tutarapp.filament.FilamentEngineManager
 import com.infusory.tutarapp.filament.renderer.CameraController
 import com.infusory.tutarapp.filament.renderer.Container3DRenderer
@@ -80,8 +81,13 @@ class Container3D @JvmOverloads constructor(
     private var contentContainer: FrameLayout? = null
     private var animationToggleButton: ImageView? = null
     private var interactionButton: ImageView? = null
+    private var labelToggleButton: ImageView? = null
     private val sideControlButtons = mutableListOf<ImageView>()
     private val cornerIndicators = mutableListOf<ImageView>()
+
+    // Labels
+    private var labelManager: LabelOverlayManager? = null
+    private var modelHasLabels = false
 
     // Loading shimmer
     private var loadingOverlay: FrameLayout? = null
@@ -95,6 +101,11 @@ class Container3D @JvmOverloads constructor(
     internal var currentModelPath: String? = initialModelData
     internal var currentModelData: ModelData? = null
     private var savedCameraState: CameraController.CameraState? = null
+
+    // Audio
+    private var audioPlayer: ModelAudioPlayer? = null
+
+    private var resolvedModelPath: String? = null
 
     // Auto-hide
     private var autoHideEnabled = true
@@ -121,6 +132,9 @@ class Container3D @JvmOverloads constructor(
     private var resizeSnapshot: Bitmap? = null
     private var snapshotView: ImageView? = null
     private val snapshotHandler = Handler(Looper.getMainLooper())
+
+    private var lastLabelUpdateTime = 0L
+    private val LABEL_UPDATE_INTERVAL_MS = 66L
 
     // Callbacks
     var onLoadingStarted: (() -> Unit)? = null
@@ -210,8 +224,23 @@ class Container3D @JvmOverloads constructor(
         if (enabled) scheduleAutoHide() else { cancelAutoHide(); showControls() }
     }
 
-    fun pauseRendering() = renderer?.onPause()
-    fun resumeRendering() = renderer?.onResume()
+    fun pauseRendering() {
+        renderer?.onPause()
+        audioPlayer?.pause()
+    }
+
+    fun resumeRendering() {
+        renderer?.onResume()
+        audioPlayer?.play()
+    }
+
+    // ==================== Label API ====================
+
+    fun showLabels() = labelManager?.showLabels()
+    fun hideLabels() = labelManager?.hideLabels()
+    fun toggleModelLabels() = labelManager?.toggleLabels()
+    fun hasLabels(): Boolean = modelHasLabels
+    fun isLabelsVisible(): Boolean = labelManager?.isLabelsVisible() == true
 
     // ==================== Lifecycle ====================
 
@@ -225,9 +254,14 @@ class Container3D @JvmOverloads constructor(
         Log.d(TAG, "[$containerId] destroy()")
         isViewInitialized = false
         isModelLoaded = false
+        modelHasLabels = false
         cancelAutoHide()
         hideLoading()
         releaseResizeSnapshot()
+        audioPlayer?.release()
+        audioPlayer = null
+        labelManager?.destroy()
+        labelManager = null
 
         renderer?.let { FilamentEngineManager.destroyRenderer(it) }
         renderer = null
@@ -290,7 +324,7 @@ class Container3D @JvmOverloads constructor(
         contentContainer = FrameLayout(context).apply {
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f)
             setBackgroundResource(R.drawable.dotted_border_background)
-            setPadding(0, dpToPx(2), dpToPx(2), dpToPx(2))
+            setPadding(dpToPx(2), dpToPx(2), dpToPx(2), dpToPx(2))
         }
 
         addControlButtons()
@@ -312,6 +346,15 @@ class Container3D @JvmOverloads constructor(
             animationToggleButton = createButton(R.drawable.ic_pause_animation, "Animation") { toggleAnimation() }
             addView(animationToggleButton!!)
             sideControlButtons.add(animationToggleButton!!)
+
+            addView(createSpacer())
+
+            // Label button (hidden until labels are detected in the model)
+            labelToggleButton = createButton(android.R.drawable.ic_menu_info_details, "Labels") {
+                labelManager?.toggleLabels()
+            }.apply { visibility = GONE }
+            addView(labelToggleButton!!)
+            sideControlButtons.add(labelToggleButton!!)
 
             addView(createSpacer())
 
@@ -352,12 +395,12 @@ class Container3D @JvmOverloads constructor(
             dpToPx(CORNER_INDICATOR_SIZE)
         ).apply {
             this.gravity = gravity
-            val margin = dpToPx(4)
+            val margin = dpToPx(2)
             setMargins(margin, margin, margin, margin)
         }
         background = GradientDrawable().apply {
             shape = GradientDrawable.RECTANGLE
-            setStroke(dpToPx(2), Color.WHITE)
+            setStroke(dpToPx(2), Color.GRAY)
             setColor(Color.TRANSPARENT)
             cornerRadius = dpToPx(2).toFloat()
         }
@@ -426,10 +469,57 @@ class Container3D @JvmOverloads constructor(
                         toggleAnimation()
                     }
                     savedCameraState?.let { restoreCameraState(it) }
+
+                    // Attach and play audio if a sibling audio file exists
+                    (resolvedModelPath ?: currentModelPath)?.let { path ->
+                        audioPlayer = ModelAudioPlayer().apply {
+                            attach(path)
+                            play()
+                        }
+                    }
+
                     this@Container3D.onLoadingCompleted?.invoke()
                 }
                 onLoadingFailed = { this@Container3D.onLoadingFailed?.invoke(it) }
+
+                // Label extraction callback
+                onLabelsExtracted = { labels ->
+                    post {
+                        modelHasLabels = labels.isNotEmpty()
+                        if (modelHasLabels) {
+                            labelManager?.setLabels(labels)
+                            labelToggleButton?.visibility = VISIBLE
+                            Log.d(TAG, "[$containerId] ${labels.size} labels ready")
+                        } else {
+                            labelToggleButton?.visibility = GONE
+                        }
+                    }
+                }
+
+                // Per-frame label position
+                onFrameCallback = {
+                    if (modelHasLabels && labelManager?.isLabelsVisible() == true) {
+                        val now = System.currentTimeMillis()
+                        if (now - lastLabelUpdateTime > LABEL_UPDATE_INTERVAL_MS) {
+                            lastLabelUpdateTime = now
+                            labelManager?.updatePositions(
+                                getCamera(),
+                                getViewportWidth(),
+                                getViewportHeight(),
+                                getLabelWorldPositions()
+                            )
+                        }
+                    }
+                }
             }
+
+            // Initialize label overlay (added on top of SurfaceView)
+            labelManager = LabelOverlayManager(context).also { lm ->
+                contentContainer?.let { lm.attachTo(it) }
+            }
+
+            // Fix z-ordering so labels appear above the 3D scene
+//            renderer?.disableZOrderOnTop()
 
             updateTouchHandling()
             Log.d(TAG, "[$containerId] 3D view created")
@@ -450,7 +540,6 @@ class Container3D @JvmOverloads constructor(
                 FrameLayout.LayoutParams.MATCH_PARENT
             )
 
-            // Shimmer sweep — a narrow translucent gradient band
             shimmerView = View(context).apply {
                 layoutParams = FrameLayout.LayoutParams(dpToPx(100), FrameLayout.LayoutParams.MATCH_PARENT)
                 background = GradientDrawable(
@@ -464,7 +553,6 @@ class Container3D @JvmOverloads constructor(
             }
             addView(shimmerView!!)
 
-            // Subtle status text at bottom-center
             loadingStatusText = TextView(context).apply {
                 layoutParams = FrameLayout.LayoutParams(
                     FrameLayout.LayoutParams.WRAP_CONTENT,
@@ -496,7 +584,6 @@ class Container3D @JvmOverloads constructor(
         val sv = shimmerView ?: return
         val overlay = loadingOverlay ?: return
 
-        // Wait for layout so we know the width
         overlay.post {
             val sweepWidth = dpToPx(100).toFloat()
             val containerWidth = overlay.width.toFloat()
@@ -564,6 +651,7 @@ class Container3D @JvmOverloads constructor(
 
         for (file in locations) {
             if (file.exists() && file.canRead()) {
+                resolvedModelPath = file.absolutePath
                 ModelDecryptionUtil.decryptModelFile(file)?.let { return it }
                 try {
                     val bytes = file.readBytes()
@@ -578,9 +666,10 @@ class Container3D @JvmOverloads constructor(
 
         tryLoadFromAssets(actualFilename)?.let { return it }
 
-        Log.d(TAG, "[$containerId] Starting download: $actualFilename")
-        showLoading("Downloading...")
-        initiateRemoteDownload(actualFilename)
+        Log.e(TAG, "[$containerId] Model not found: $actualFilename")
+        hideLoading()
+        showError("Model not found!!!")
+        onLoadingFailed?.invoke("Model not found: $actualFilename")
         return null
     }
 
@@ -600,38 +689,6 @@ class Container3D @JvmOverloads constructor(
         return null
     }
 
-    private fun initiateRemoteDownload(filename: String) {
-        ModelDownloader.downloadIfNeeded(context, filename, object : ModelDownloader.DownloadCallback {
-            override fun onSuccess(file: File) {
-                Handler(Looper.getMainLooper()).post {
-                }
-                Thread {
-                    val buffer = ModelDecryptionUtil.decryptModelFile(file)
-                    Handler(Looper.getMainLooper()).post {
-                        if (buffer != null) {
-                            clearErrorViews()
-                            hideLoading()
-                            renderer?.loadModel(buffer)
-                            isModelLoaded = true
-                            Log.d(TAG, "[$containerId] Downloaded model loaded")
-                            onLoadingCompleted?.invoke()
-                        } else {
-                            hideLoading()
-                            showError("Decrypt failed")
-                            onLoadingFailed?.invoke("Decrypt failed")
-                        }
-                    }
-                }.start()
-            }
-
-            override fun onFailure(error: String) {
-                hideLoading()
-                showError("Download failed")
-                onLoadingFailed?.invoke("Download failed: $error")
-            }
-        })
-    }
-
     private fun clearErrorViews() {
         contentContainer?.let { c ->
             for (i in c.childCount - 1 downTo 0) {
@@ -646,7 +703,11 @@ class Container3D @JvmOverloads constructor(
 
     private fun showError(msg: String) {
         clearErrorViews()
+        controlsContainer?.visibility = View.GONE
+        contentContainer?.background=null;
+        cornerIndicators.forEach { it.visibility= View.GONE }
         contentContainer?.addView(createErrorView(msg))
+
     }
 
     // ==================== Animation ====================
@@ -656,6 +717,7 @@ class Container3D @JvmOverloads constructor(
             animationToggleButton?.setImageResource(
                 if (paused) R.drawable.ic_play_animation else R.drawable.ic_pause_animation
             )
+            if (paused) audioPlayer?.pause() else audioPlayer?.play()
         } ?: Log.d("No animations", "No animations are available in this model")
     }
 
@@ -897,10 +959,11 @@ class Container3D @JvmOverloads constructor(
     private fun getCorner(x: Float, y: Float): Corner {
         fun d(x1: Float, y1: Float, x2: Float, y2: Float) = sqrt((x1 - x2).pow(2) + (y1 - y2).pow(2))
         val h = RESIZE_HANDLE_SIZE / 2
+        val leftOffset = (controlsContainer?.width ?: 0).toFloat()
         return when {
-            d(x, y, h, h) <= RESIZE_HIT_AREA -> Corner.TOP_LEFT
+            d(x, y, leftOffset + h, h) <= RESIZE_HIT_AREA -> Corner.TOP_LEFT
             d(x, y, width - h, h) <= RESIZE_HIT_AREA -> Corner.TOP_RIGHT
-            d(x, y, h, height - h) <= RESIZE_HIT_AREA -> Corner.BOTTOM_LEFT
+            d(x, y, leftOffset + h, height - h) <= RESIZE_HIT_AREA -> Corner.BOTTOM_LEFT
             d(x, y, width - h, height - h) <= RESIZE_HIT_AREA -> Corner.BOTTOM_RIGHT
             else -> Corner.NONE
         }
@@ -994,22 +1057,86 @@ class Container3D @JvmOverloads constructor(
     private fun createErrorView(msg: String) = LinearLayout(context).apply {
         orientation = LinearLayout.VERTICAL
         setPadding(dpToPx(16), dpToPx(16), dpToPx(16), dpToPx(16))
-        setBackgroundColor(Color.parseColor("#FF5722"))
+        background = GradientDrawable(
+            GradientDrawable.Orientation.TOP_BOTTOM,
+            intArrayOf(Color.parseColor("#F5F5F5"), Color.parseColor("#FAFAFA"))
+        ).apply {
+            setStroke(dpToPx(1), Color.parseColor("#E0E0E0"))
+            cornerRadius = dpToPx(4).toFloat()
+        }
         gravity = Gravity.CENTER
 
-        addView(TextView(context).apply {
-            text = "❌"
-            textSize = 32f
-            gravity = Gravity.CENTER
-            setTextColor(Color.WHITE)
+        // Frown face drawn with Canvas
+        addView(object : View(context) {
+            private val paint = android.graphics.Paint().apply {
+                isAntiAlias = true
+                strokeCap = android.graphics.Paint.Cap.ROUND
+            }
+
+            override fun onDraw(canvas: android.graphics.Canvas) {
+                val cx = width / 2f
+                val cy = height / 2f
+                val r = (minOf(width, height) / 2f) * 0.8f
+
+                // Circle
+                paint.style = android.graphics.Paint.Style.STROKE
+                paint.strokeWidth = dpToPx(2).toFloat()
+                paint.color = Color.parseColor("#AAAAAA")
+                canvas.drawCircle(cx, cy, r, paint)
+
+                // Eyes
+                paint.style = android.graphics.Paint.Style.FILL
+                paint.color = Color.parseColor("#999999")
+                val eyeY = cy - r * 0.2f
+                val eyeSpacing = r * 0.35f
+                canvas.drawCircle(cx - eyeSpacing, eyeY, r * 0.08f, paint)
+                canvas.drawCircle(cx + eyeSpacing, eyeY, r * 0.08f, paint)
+
+                // Frown arc
+                paint.style = android.graphics.Paint.Style.STROKE
+                paint.strokeWidth = dpToPx(2).toFloat()
+                val frownTop = cy + r * 0.25f
+                val frownRect = android.graphics.RectF(
+                    cx - r * 0.35f, frownTop,
+                    cx + r * 0.35f, frownTop + r * 0.4f
+                )
+                canvas.drawArc(frownRect, 200f, 140f, false, paint)
+            }
+
+            init {
+                layoutParams = LinearLayout.LayoutParams(dpToPx(48), dpToPx(48)).apply {
+                    gravity = Gravity.CENTER
+                }
+            }
         })
 
         addView(TextView(context).apply {
             text = msg
             textSize = 11f
             gravity = Gravity.CENTER
-            setTextColor(Color.WHITE)
+            setTextColor(Color.parseColor("#888888"))
             setPadding(0, dpToPx(8), 0, 0)
+        })
+
+        addView(TextView(context).apply {
+            text = "Remove"
+            textSize = 12f
+            gravity = Gravity.CENTER
+            setTextColor(Color.parseColor("#CC5500"))
+            setPadding(dpToPx(16), dpToPx(8), dpToPx(16), dpToPx(8))
+            background = GradientDrawable().apply {
+                setStroke(dpToPx(1), Color.parseColor("#CCCCCC"))
+                cornerRadius = dpToPx(16).toFloat()
+                setColor(Color.TRANSPARENT)
+            }
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                topMargin = dpToPx(12)
+                gravity = Gravity.CENTER
+            }
+            setOnClickListener { onRemoveRequest?.invoke() ?: cleanup() }
         })
     }
 
@@ -1019,7 +1146,12 @@ class Container3D @JvmOverloads constructor(
 
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
-        if (isViewInitialized) renderer?.onResume()
+        if (isViewInitialized) {
+            renderer?.onResume()
+            if (renderer?.isAnimationPaused() != true) {
+                audioPlayer?.play()
+            }
+        }
         animationToggleButton?.setImageResource(
             if (renderer?.isAnimationPaused() == true) R.drawable.ic_play_animation
             else R.drawable.ic_pause_animation
@@ -1031,6 +1163,7 @@ class Container3D @JvmOverloads constructor(
         super.onDetachedFromWindow()
         stopShimmer()
         releaseResizeSnapshot()
+        audioPlayer?.pause()
         renderer?.onPause()
         cancelAutoHide()
     }

@@ -73,6 +73,8 @@ object FilamentEngineProvider {
         checkInitialized()
         return engine!!
     }
+
+
     
     /**
      * Get the shared Renderer instance

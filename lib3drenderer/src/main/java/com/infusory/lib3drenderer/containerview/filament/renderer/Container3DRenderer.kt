@@ -10,6 +10,7 @@ import com.google.android.filament.Scene
 import com.google.android.filament.SwapChain
 import com.google.android.filament.View
 import com.google.android.filament.gltfio.FilamentAsset
+import com.infusory.lib3drenderer.containerview.label.GlbLabelExtractor
 import com.infusory.tutarapp.filament.core.FilamentEngineProvider
 import com.infusory.tutarapp.filament.core.FilamentResourceManager
 import com.infusory.tutarapp.filament.core.IRenderable
@@ -46,10 +47,17 @@ class Container3DRenderer(
     private var isPaused = false
     private var pendingModelBuffer: ByteBuffer? = null
 
+    // Label entity tracking
+    private var labelEntities: List<Pair<Int, GlbLabelExtractor.LabelInfo>> = emptyList()
+    private val _worldMatrix = FloatArray(16) // reusable per-frame, avoids allocation
+    private var _labelPositions: MutableList<FloatArray>? = null
+
     var onActiveStateChanged: (() -> Unit)? = null
     var onLoadingStarted: (() -> Unit)? = null
     var onLoadingCompleted: (() -> Unit)? = null
     var onLoadingFailed: ((String) -> Unit)? = null
+    var onLabelsExtracted: ((List<GlbLabelExtractor.LabelInfo>) -> Unit)? = null
+    var onFrameCallback: (() -> Unit)? = null
 
     fun initialize(id: Int) {
         if (isInitialized) return
@@ -85,11 +93,11 @@ class Container3DRenderer(
 
             cameraController.initialize(camera!!, view!!)
 
-            // Create SurfaceManager with its own Renderer
             surfaceManager = SurfaceManager(surfaceView, this)
             surfaceManager?.filamentView = view
             surfaceManager?.onFrameUpdate = { frameTimeNanos ->
                 animationController.update(frameTimeNanos)
+                onFrameCallback?.invoke()
             }
             surfaceManager?.initialize()
 
@@ -134,6 +142,24 @@ class Container3DRenderer(
             onLoadingCompleted?.invoke()
             Log.d(TAG, "[$rendererId] Model loaded")
 
+            // Extract labels and resolve to Filament entities
+            try {
+                val labels = GlbLabelExtractor.extractLabels(buffer)
+                if (labels.isNotEmpty()) {
+                    labelEntities = labels.mapNotNull { labelInfo ->
+                        val entity = asset?.getFirstEntityByName(labelInfo.nodeName) ?: 0
+                        if (entity != 0) {
+                            Log.d(TAG, "Resolved label entity: ${labelInfo.nodeName} → $entity")
+                            Pair(entity, labelInfo)
+                        } else {
+                            Log.w(TAG, "Label entity not found: ${labelInfo.nodeName}")
+                            null
+                        }
+                    }
+                }
+                onLabelsExtracted?.invoke(labels)
+            } catch (_: Exception) {}
+
         } catch (e: Exception) {
             Log.e(TAG, "[$rendererId] Load failed", e)
             onLoadingFailed?.invoke("Error: ${e.message}")
@@ -146,7 +172,39 @@ class Container3DRenderer(
             resourceManager.destroyAsset(it)
             asset = null
             animationController.clear()
+            labelEntities = emptyList()
+            _labelPositions = null
         }
+    }
+
+    // ========== Label World Positions ==========
+
+    /**
+     * Query Filament's TransformManager for the current world position
+     * of each labeled node. Returns null if no labels or engine unavailable.
+     * Call this each frame for animated models.
+     */
+    fun getLabelWorldPositions(): List<FloatArray>? {
+        if (labelEntities.isEmpty()) return null
+        val engine = FilamentEngineProvider.getEngine() ?: return null
+        val tm = engine.transformManager
+
+        // Reuse list, only allocate once
+        if (_labelPositions == null || _labelPositions!!.size != labelEntities.size) {
+            _labelPositions = labelEntities.map { floatArrayOf(0f, 0f, 0f) }.toMutableList()
+        }
+
+        for (i in labelEntities.indices) {
+            val (entity, _) = labelEntities[i]
+            val instance = tm.getInstance(entity)
+            if (instance != 0) {
+                tm.getWorldTransform(instance, _worldMatrix)
+                _labelPositions!![i][0] = _worldMatrix[12]
+                _labelPositions!![i][1] = _worldMatrix[13]
+                _labelPositions!![i][2] = _worldMatrix[14]
+            }
+        }
+        return _labelPositions
     }
 
     // ========== IRenderable ==========
@@ -156,10 +214,7 @@ class Container3DRenderer(
         return isInitialized && !isPaused && surfaceReady
     }
 
-    override fun updateAnimations(frameTimeNanos: Long) {
-        // Animation is updated via SurfaceManager.onFrameUpdate
-        // This is called from render loop but we don't use it
-    }
+    override fun updateAnimations(frameTimeNanos: Long) {}
 
     override fun getSwapChain(): SwapChain? = surfaceManager?.getSwapChain()
 
@@ -167,16 +222,10 @@ class Container3DRenderer(
 
     override fun getRenderer(): Renderer? = surfaceManager?.getRenderer()
 
-    /**
-     * Request render from SurfaceManager.
-     */
     fun requestRender(frameTimeNanos: Long) {
         surfaceManager?.requestRender(frameTimeNanos)
     }
 
-    /**
-     * Get render stats.
-     */
     fun getSuccessRate(): Int {
         val sm = surfaceManager ?: return 0
         val total = sm.successfulFrames + sm.failedFrames
@@ -258,4 +307,12 @@ class Container3DRenderer(
     fun restoreCameraState(state: CameraController.CameraState) = cameraController.restoreState(state)
 
     fun resetCamera() = cameraController.resetToDefault()
+
+    // ========== Label Support ==========
+
+    fun getCamera(): Camera? = camera
+
+    fun getViewportWidth(): Int = cameraController.getViewportWidth()
+
+    fun getViewportHeight(): Int = cameraController.getViewportHeight()
 }

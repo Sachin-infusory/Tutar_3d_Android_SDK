@@ -182,7 +182,6 @@ class CameraController {
         viewportWidth = width
         viewportHeight = height
 
-        // Only update the camera projection, not the view's viewport
         updateProjection()
 
         Log.d(TAG, "Projection updated for ${width}x${height}")
@@ -190,7 +189,6 @@ class CameraController {
 
     /**
      * Handle touch events for camera manipulation
-     * @return true if the event was handled
      */
     fun onTouchEvent(event: MotionEvent): Boolean {
         when (event.actionMasked) {
@@ -221,11 +219,9 @@ class CameraController {
                             val currentDistance = getPinchDistance(event)
                             val delta = currentDistance - initialPinchDistance
 
-                            // If fingers are pinching → ZOOM
                             if (kotlin.math.abs(delta) > 5f) {
                                 handleZoom(event)
                             } else {
-                                // If fingers move parallel → PAN
                                 val midX = (event.getX(0) + event.getX(1)) / 2f
                                 val midY = (event.getY(0) + event.getY(1)) / 2f
 
@@ -256,7 +252,6 @@ class CameraController {
             }
 
             MotionEvent.ACTION_POINTER_UP -> {
-                // Switch back to orbit if one finger remains
                 if (event.pointerCount == 2) {
                     val remainingIndex = if (event.actionIndex == 0) 1 else 0
                     lastTouchX = event.getX(remainingIndex)
@@ -296,17 +291,12 @@ class CameraController {
      * Pan camera (move target)
      */
     fun pan(deltaX: Float, deltaY: Float) {
-        // Use cached trig values
         if (trigDirty) updateTrigCache()
 
-        // Right vector (perpendicular to view direction in XZ plane)
         val rightX = cachedCosAz
         val rightZ = -cachedSinAz
-
-        // Up vector (always Y-up for simplicity)
         val upY = 1f
 
-        // Apply pan
         val panScale = distance * PAN_SENSITIVITY
         targetX += rightX * deltaX * panScale
         targetZ += rightZ * deltaX * panScale
@@ -324,11 +314,18 @@ class CameraController {
         view = null
     }
 
-    // ========== Private Methods ==========
+    /**
+     * Get current viewport width in pixels
+     */
+    fun getViewportWidth(): Int = viewportWidth
 
     /**
-     * Update cached trigonometry values.
+     * Get current viewport height in pixels
      */
+    fun getViewportHeight(): Int = viewportHeight
+
+    // ========== Private Methods ==========
+
     private fun updateTrigCache() {
         cachedSinPolar = sin(polar)
         cachedCosPolar = cos(polar)
@@ -337,9 +334,6 @@ class CameraController {
         trigDirty = false
     }
 
-    /**
-     * Update cached eye position.
-     */
     private fun updatePositionCache() {
         if (trigDirty) updateTrigCache()
 
@@ -356,7 +350,7 @@ class CameraController {
             cam.lookAt(
                 eyeX, eyeY, eyeZ,
                 targetX.toDouble(), targetY.toDouble(), targetZ.toDouble(),
-                0.0, 1.0, 0.0  // Y-up
+                0.0, 1.0, 0.0
             )
         }
     }
