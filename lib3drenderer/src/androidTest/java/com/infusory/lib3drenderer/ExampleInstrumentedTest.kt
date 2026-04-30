@@ -1,4 +1,4 @@
-package com.infusory.lib3drenderer
+package com.infusory.tutar3d
 
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -19,6 +19,6 @@ class ExampleInstrumentedTest {
     fun useAppContext() {
         // Context of the app under test.
         val appContext = InstrumentationRegistry.getInstrumentation().targetContext
-        assertEquals("com.infusory.lib3drenderer.test", appContext.packageName)
+        assertEquals("com.infusory.tutar3d.test", appContext.packageName)
     }
 }

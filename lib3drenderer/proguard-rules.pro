@@ -1,36 +1,40 @@
-# Add project specific ProGuard rules here.
-# You can control the set of applied configuration files using the
-# proguardFiles setting in build.gradle.
-#
-# For more details, see
-#   http://developer.android.com/guide/developing/tools/proguard.html
+# =====================================================================
+# ProGuard rules applied to lib3drenderer's own minification step
+# (release build with isMinifyEnabled = true). Mirrors consumer-rules.pro
+# so the AAR ships with the same surface kept whether the consumer
+# minifies or not.
+# =====================================================================
 
-# If your project uses WebView with JS, uncomment the following
-# and specify the fully qualified class name to the JavaScript interface
-# class:
-#-keepclassmembers class fqcn.of.javascript.interface.for.webview {
-#   public *;
-#}
+# Preserve line numbers in stack traces; hide the original source filename.
+-keepattributes SourceFile,LineNumberTable
+-renamesourcefileattribute SourceFile
 
-# Uncomment this to preserve the line number information for
-# debugging stack traces.
-#-keepattributes SourceFile,LineNumberTable
+# ---------- Public SDK API ----------
+-keep public class com.infusory.tutar3d.Tutar { *; }
+-keep public class com.infusory.tutar3d.Tutar$* { *; }
 
-# If you keep the line number information, uncomment this to
-# hide the original source file name.
-#-renamesourcefileattribute SourceFile
-# Keep your own public API and internal reflection code
--keep class com.infusory.lib3drenderer.Tutar {*;}
--keep class com.infusory.lib3drenderer.containerview.ModelData {*;}
-# Keep Kotlin metadata (important for data classes and default params)
+-keep public class com.infusory.tutar3d.InitCallback { *; }
+-keep public class com.infusory.tutar3d.LoadingCallback { *; }
+-keep public class com.infusory.tutar3d.LoadedCallback { *; }
+-keep public class com.infusory.tutar3d.ErrorCallback { *; }
+-keep public class com.infusory.tutar3d.RemoveCallback { *; }
+
+-keep public class com.infusory.tutar3d.containerview.Container3D { *; }
+-keep public class com.infusory.tutar3d.containerview.Container3D$* { *; }
+
+# ---------- JNI ----------
+# Bound by C++ symbol name; renaming breaks System.loadLibrary lookup.
+-keep class com.infusory.tutar3d.containerview.NativeKeyProvider { *; }
+
+# Safety net for any other native method.
+-keepclasseswithmembernames class * {
+    native <methods>;
+}
+
+# ---------- Kotlin / AndroidX ----------
 -keep class kotlin.Metadata { *; }
 
 -keep class androidx.lifecycle.** { *; }
 -keepclassmembers class * extends androidx.lifecycle.ViewModel { *; }
 
-# Keep Gson model attributes
--keepclassmembers class * {
-    @com.google.gson.annotations.SerializedName <fields>;
-}
-# Preserve annotations (important for Retrofit)
 -keepattributes *Annotation*

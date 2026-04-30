@@ -1,4 +1,4 @@
-package com.infusory.lib3drenderer
+package com.infusory.tutar3d
 
 import org.junit.Test
 

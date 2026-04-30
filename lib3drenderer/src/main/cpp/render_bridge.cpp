@@ -7,41 +7,71 @@ static constexpr int PWD_LEN = 32;
 
 // --- Stored in native: XOR-encoded password blob ---
 // This looks like random data in the binary
+
+// test key ................
+//static const uint8_t encoded_blob[PWD_LEN] = {
+//        0xC3, 0x6C, 0xA2, 0xCA, 0x5E, 0xE6, 0x71, 0x2E,
+//        0xB9, 0xD1, 0xF7, 0x46, 0x1F, 0x65, 0x89, 0x69,
+//        0x73, 0xAE, 0x43, 0xCF, 0xDB, 0x5D, 0x81, 0x5B,
+//        0x68, 0x7F, 0xE2, 0xEB, 0x2E, 0x95, 0x11, 0xA6
+//};
+
 static const uint8_t encoded_blob[PWD_LEN] = {
-        0xC3, 0x6C, 0xA2, 0xCA, 0x5E, 0xE6, 0x71, 0x2E,
-        0xB9, 0xD1, 0xF7, 0x46, 0x1F, 0x65, 0x89, 0x69,
-        0x73, 0xAE, 0x43, 0xCF, 0xDB, 0x5D, 0x81, 0x5B,
-        0x68, 0x7F, 0xE2, 0xEB, 0x2E, 0x95, 0x11, 0xA6
+        0x30, 0x67, 0xDF, 0x32, 0xCF, 0x9F, 0x8A, 0xC5, 0x04, 0xD6, 0xC7, 0x34, 0x70, 0x91, 0x82, 0x7D,
+        0x4C, 0xC7, 0x29, 0x55, 0xF5, 0x1D, 0x44, 0x41, 0xDE, 0xBF, 0xA0, 0x81, 0xDF, 0x82, 0x25, 0x02
 };
 
 // --- Native-side mask fragment (last 16 bytes of XOR key) ---
 // Computed via arithmetic so it doesn't appear as a constant array.
 // The actual values are: 0x12,0xC8,0x77,0xAA,0xEE,0x3F,0xB1,0x63,
 //                         0x50,0x19,0xD4,0x88,0x4C,0xF6,0x21,0x9E
+
+// test key native mask...................
+//static void compute_native_mask(uint8_t* out) {
+//    // Each value is derived from simple arithmetic on unrelated-looking constants
+//    // A reverse engineer sees math, not a key
+//    out[0]  = (uint8_t)(0x09 + 0x09);           // 0x12
+//    out[1]  = (uint8_t)(0x64 * 2);               // 0xC8
+//    out[2]  = (uint8_t)(0xEE >> 1);              // 0x77
+//    out[3]  = (uint8_t)(0x55 ^ 0xFF);            // 0xAA
+//    out[4]  = (uint8_t)(0x77 * 2);               // 0xEE
+//    out[5]  = (uint8_t)(0x1F + 0x20);            // 0x3F
+//    out[6]  = (uint8_t)(0xB0 | 0x01);            // 0xB1
+//    out[7]  = (uint8_t)(0xC6 >> 1);              // 0x63
+//    out[8]  = (uint8_t)(0x28 << 1);              // 0x50
+//    out[9]  = (uint8_t)(0x32 >> 1);              // 0x19
+//    out[10] = (uint8_t)(0x6A << 1);              // 0xD4
+//    out[11] = (uint8_t)(0x44 * 2);               // 0x88
+//    out[12] = (uint8_t)(0x26 + 0x26);            // 0x4C
+//    out[13] = (uint8_t)(0xF6);                   // 0xF6 (hidden in plain sight among the math)
+//    out[14] = (uint8_t)(0x42 >> 1);              // 0x21
+//    out[15] = (uint8_t)(0x4F * 2);               // 0x9E
+//}
+
+
+
 static void compute_native_mask(uint8_t* out) {
-    // Each value is derived from simple arithmetic on unrelated-looking constants
-    // A reverse engineer sees math, not a key
-    out[0]  = (uint8_t)(0x09 + 0x09);           // 0x12
-    out[1]  = (uint8_t)(0x64 * 2);               // 0xC8
-    out[2]  = (uint8_t)(0xEE >> 1);              // 0x77
-    out[3]  = (uint8_t)(0x55 ^ 0xFF);            // 0xAA
-    out[4]  = (uint8_t)(0x77 * 2);               // 0xEE
-    out[5]  = (uint8_t)(0x1F + 0x20);            // 0x3F
-    out[6]  = (uint8_t)(0xB0 | 0x01);            // 0xB1
-    out[7]  = (uint8_t)(0xC6 >> 1);              // 0x63
-    out[8]  = (uint8_t)(0x28 << 1);              // 0x50
-    out[9]  = (uint8_t)(0x32 >> 1);              // 0x19
-    out[10] = (uint8_t)(0x6A << 1);              // 0xD4
-    out[11] = (uint8_t)(0x44 * 2);               // 0x88
-    out[12] = (uint8_t)(0x26 + 0x26);            // 0x4C
-    out[13] = (uint8_t)(0xF6);                   // 0xF6 (hidden in plain sight among the math)
-    out[14] = (uint8_t)(0x42 >> 1);              // 0x21
-    out[15] = (uint8_t)(0x4F * 2);               // 0x9E
+    out[0]  = (uint8_t)(0xF6 >> 1);         // 0x7B
+    out[1]  = (uint8_t)(0x51 + 0x52);       // 0xA3
+    out[2]  = (uint8_t)(0x20 >> 1);         // 0x10
+    out[3]  = (uint8_t)(0xCA >> 1);         // 0x65
+    out[4]  = (uint8_t)(0x61 * 0x02);       // 0xC2
+    out[5]  = (uint8_t)(0xFF >> 1);         // 0x7F
+    out[6]  = (uint8_t)(0x3A + 0x3B);       // 0x75
+    out[7]  = (uint8_t)(0x48 >> 1);         // 0x24
+    out[8]  = (uint8_t)(0x77 * 0x02);       // 0xEE
+    out[9]  = (uint8_t)(0x43 * 0x02);       // 0x86
+    out[10] = (uint8_t)(0x48 + 0x49);       // 0x91
+    out[11] = (uint8_t)(0x5B * 0x02);       // 0xB6
+    out[12] = (uint8_t)(0x5E * 0x02);       // 0xBC
+    out[13] = (uint8_t)(0x59 + 0x5A);       // 0xB3
+    out[14] = (uint8_t)(0x09 * 0x02);       // 0x12
+    out[15] = (uint8_t)(0x30 * 0x02);       // 0x60
 }
 
 extern "C"
 JNIEXPORT jbyteArray JNICALL
-Java_com_infusory_lib3drenderer_containerview_NativeKeyProvider_getDecryptionKey(
+Java_com_infusory_tutar3d_containerview_NativeKeyProvider_getDecryptionKey(
         JNIEnv* env,
         jobject ,
         jbyteArray kotlinMask   // 16 bytes from Kotlin side

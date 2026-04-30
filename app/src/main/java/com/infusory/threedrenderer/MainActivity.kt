@@ -12,9 +12,7 @@ import android.widget.TextView
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
-import com.infusory.lib3drenderer.Tutar
-import com.infusory.lib3drenderer.containerview.ModelData
-import java.io.File
+import com.infusory.tutar3d.Tutar
 
 class MainActivity : AppCompatActivity() {
     private lateinit var containerParent: FrameLayout
@@ -24,18 +22,17 @@ class MainActivity : AppCompatActivity() {
     private val OFFSET_STEP_DP = 40 // Each new container is offset by this much
 
     private val availableModels = arrayOf(
+        "BellJarExperiment.glb",
+        "Bird.glb",
         "BirdAndNest.glb",
-        "OzoneDepletion.glb",
-        "CirculatorySystem.glb",
-        "DNA.glb",
-        "Solenoid.glb",
-        "Vowels.glb",
-        "Rutherfords_experiment.glb",
-        "skeleton.glb",
-        "steam_engine.glb",
-        "anatomy_of_a_flower.glb",
-        "animal_cell.glb",
-        "Brain.glb"
+        "BirdNestInsideOutside.glb",
+        "Birds.glb",
+        "CatAndAeroplane.glb",
+        "CatAndKittenInsideOutside.glb",
+        "Cow.glb",
+        "CowAndCalf.glb",
+        "CowAndShed.glb",
+        "OzoneDepletion.glb"
     )
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -74,11 +71,7 @@ class MainActivity : AppCompatActivity() {
                 background = ContextCompat.getDrawable(context, android.R.drawable.list_selector_background)
 
                 setOnClickListener {
-                    val fullPath = File("hh", fileName).absolutePath
-                    val modelName = fileName.substringBeforeLast(".")
-                    val modelData = ModelData(modelName, fileName, null)
-
-                    onModelSelected(modelData, fullPath)
+                    onModelSelected(fileName)
                     dialog.dismiss()
                 }
             }
@@ -91,11 +84,10 @@ class MainActivity : AppCompatActivity() {
         dialog.show()
     }
 
-    private fun onModelSelected(modelData: ModelData, modelPath: String) {
+    private fun onModelSelected(modelFilename: String) {
         val container3D = Tutar.createContainer(
             context = this,
-            modelData = modelData,
-            modelPath = modelPath,
+            modelPath = modelFilename,
             parent = containerParent
         )
 
